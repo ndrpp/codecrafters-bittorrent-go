@@ -39,7 +39,7 @@ func decodeInteger(i int, bencodedString string) (int, error, int) {
 	i += numberLen
 
 	res, err := strconv.Atoi(bencodedString[init+1 : i])
-	return res, err, numberLen
+	return res, err, numberLen + 1
 }
 
 func decodeList(i int, bencodedString string) (interface{}, error, int) {
@@ -63,20 +63,20 @@ func decodeList(i int, bencodedString string) (interface{}, error, int) {
 				return "", err, 0
 			}
 			result = append(result, num)
-			j += length
+			j += length - 1
 
         case bencodedString[j] == 'e':
             charLen = j - i
             //fmt.Println("charLen: ", charLen)
             break
 
-        case bencodedString[j + 1] == 'l':
-            list, err, length := decodeList(j + 1, bencodedString)
+        case bencodedString[j] == 'l' && j != i:
+            list, err, length := decodeList(j, bencodedString)
 			if err != nil {
 				return "", err, 0
 			}
 			result = append(result, list)
-			j += length + 1
+			j += length 
 
         default:
             continue
