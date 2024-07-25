@@ -18,18 +18,18 @@ func decodeString(i int, bencodedString string) (string, error, int) {
 		}
 	}
 
-	lengthStr := bencodedString[i : firstColonIndex]
+	lengthStr := bencodedString[i:firstColonIndex]
 	length, err := strconv.Atoi(lengthStr)
 	if err != nil {
-        return "", fmt.Errorf("Failed to decode string length: %v", err), 0
+		return "", fmt.Errorf("Failed to decode string length: %v", err), 0
 	}
 	i += firstColonIndex - i + length
-	return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil, firstColonIndex - i + length + 1
+	return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil, i
 }
 
 func decodeInteger(i int, bencodedString string) (int, error, int) {
 	var numberLen int
-    init := i
+	init := i
 	for j := i; j < len(bencodedString); j++ {
 		if bencodedString[j] == 'e' {
 			numberLen = j - i
@@ -44,42 +44,40 @@ func decodeInteger(i int, bencodedString string) (int, error, int) {
 
 func decodeList(i int, bencodedString string) (interface{}, error, int) {
 	result := make([]any, 0, 10)
-    var charLen int
+	var charLen int
+listLoop:
 	for j := i; j < len(bencodedString); j++ {
 		switch {
 		case unicode.IsDigit(rune(bencodedString[j])):
-			str, err, length := decodeString(j, bencodedString)
-            //fmt.Println("str: ", str)
+			str, err, position := decodeString(j, bencodedString)
 			if err != nil {
 				return "", err, 0
 			}
 			result = append(result, str)
-			j += length
+			j = position
 
 		case bencodedString[j] == 'i':
 			num, err, length := decodeInteger(j, bencodedString)
-            //fmt.Println("num: ", num)
 			if err != nil {
 				return "", err, 0
 			}
 			result = append(result, num)
 			j += length - 1
 
-        case bencodedString[j] == 'e':
-            charLen = j - i
-            //fmt.Println("charLen: ", charLen)
-            break
+		case bencodedString[j] == 'e':
+			charLen = j - i
+			break listLoop
 
-        case bencodedString[j] == 'l' && j != i:
-            list, err, length := decodeList(j, bencodedString)
+		case bencodedString[j] == 'l' && j != i:
+			list, err, length := decodeList(j, bencodedString)
 			if err != nil {
 				return "", err, 0
 			}
 			result = append(result, list)
-			j += length 
+			j += length
 
-        default:
-            continue
+		default:
+			continue
 		}
 	}
 
