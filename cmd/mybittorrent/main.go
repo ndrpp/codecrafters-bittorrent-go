@@ -42,7 +42,7 @@ func decodeInteger(i int, bencodedString string) (int, error, int) {
 	return res, err, numberLen + 1
 }
 
-func decodeList(i int, bencodedString string) (interface{}, error, int) {
+func decodeList(i int, bencodedString string) ([]any, error, int) {
 	result := make([]any, 0, 10)
 	var charLen int
 listLoop:
@@ -51,7 +51,7 @@ listLoop:
 		case unicode.IsDigit(rune(bencodedString[j])):
 			str, err, position := decodeString(j, bencodedString)
 			if err != nil {
-				return "", err, 0
+				return make([]any, 0), err, 0
 			}
 			result = append(result, str)
 			j = position
@@ -59,7 +59,7 @@ listLoop:
 		case bencodedString[j] == 'i':
 			num, err, length := decodeInteger(j, bencodedString)
 			if err != nil {
-				return "", err, 0
+				return make([]any, 0), err, 0
 			}
 			result = append(result, num)
 			j += length - 1
@@ -68,10 +68,10 @@ listLoop:
 			charLen = j - i
 			break listLoop
 
-		case bencodedString[j] == 'l' && j != i:
+		case (bencodedString[j] == 'l' || bencodedString[j] == 'd') && j != i:
 			list, err, length := decodeList(j, bencodedString)
 			if err != nil {
-				return "", err, 0
+				return make([]any, 0), err, 0
 			}
 			result = append(result, list)
 			j += length
@@ -82,6 +82,28 @@ listLoop:
 	}
 
 	return result, nil, charLen
+}
+
+func parseList(list []any) (map[string]any, error) {
+	result := make(map[string]any, 10)
+	for j := 0; j < len(list); j += 2 {
+		v, ok := list[j].(string)
+		if ok == false {
+			return make(map[string]any, 0), fmt.Errorf("Key must be a string")
+		}
+
+		second, ok := list[j+1].([]any)
+		if ok == false {
+			result[v] = list[j+1]
+		} else {
+			if len(second)%2 != 0 {
+				result[v] = second
+			} else {
+				result[v], _ = parseList(second)
+			}
+		}
+	}
+	return result, nil
 }
 
 func decodeBencode(bencodedString string) (interface{}, error, int) {
@@ -95,6 +117,11 @@ func decodeBencode(bencodedString string) (interface{}, error, int) {
 
 		case bencodedString[i] == 'l':
 			return decodeList(i, bencodedString)
+
+		case bencodedString[i] == 'd':
+			list, _, length := decodeList(i, bencodedString)
+			res, err := parseList(list)
+			return res, err, length
 
 		default:
 			return "", fmt.Errorf("Unsupported"), 0
