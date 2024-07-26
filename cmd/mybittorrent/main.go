@@ -144,6 +144,26 @@ func main() {
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
+	} else if command == "info" {
+		fp := os.Args[2]
+
+		content, err := os.ReadFile(fp)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		list, _, _ := decodeList(0, string(content))
+		res, err := parseList(list)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		tracker := res["announce"]
+		info := map[string]any(res["info"].(map[string]any))
+		length := info["length"]
+		fmt.Fprintln(os.Stdout, "Tracker URL:", tracker)
+		fmt.Fprintln(os.Stdout, "Length:", length)
+
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
