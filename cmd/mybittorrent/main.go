@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"unicode"
-	//bencode "github.com/jackpal/bencode-go" // Available if you need it!
 )
 
 func decodeString(i int, bencodedString string) (string, error, int) {
@@ -27,6 +30,10 @@ func decodeString(i int, bencodedString string) (string, error, int) {
 	return bencodedString[firstColonIndex+1 : firstColonIndex+1+length], nil, i
 }
 
+func bencodeString(str string) string {
+	return fmt.Sprintf("%d:%s", len(str), str)
+}
+
 func decodeInteger(i int, bencodedString string) (int, error, int) {
 	var numberLen int
 	init := i
@@ -40,6 +47,10 @@ func decodeInteger(i int, bencodedString string) (int, error, int) {
 
 	res, err := strconv.Atoi(bencodedString[init+1 : i])
 	return res, err, numberLen + 1
+}
+
+func bencodeInteger(num int) string {
+	return fmt.Sprintf("i%de", num)
 }
 
 func decodeList(i int, bencodedString string) ([]any, error, int) {
@@ -161,11 +172,88 @@ func main() {
 		tracker := res["announce"]
 		info := map[string]any(res["info"].(map[string]any))
 		length := info["length"]
+		bencodedInfo, err := bencode(info)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+
+		hasher := sha1.New()
+		_, err = hasher.Write([]byte(bencodedInfo))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to sha1 hash the commit: %s\n", err)
+			os.Exit(1)
+		}
+		sha := hasher.Sum(nil)
+		hexedSha := hex.EncodeToString(sha)
+
 		fmt.Fprintln(os.Stdout, "Tracker URL:", tracker)
 		fmt.Fprintln(os.Stdout, "Length:", length)
+		fmt.Fprintln(os.Stdout, "Info Hash:", hexedSha)
 
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
 	}
+}
+
+func bencodeList(arr []any) string {
+	var b strings.Builder
+
+	b.Write([]byte("l"))
+	for _, value := range arr {
+		switch v := value.(type) {
+		case string:
+			str := bencodeString(v)
+			b.Write([]byte(str))
+
+		case int:
+			num := bencodeInteger(v)
+			b.Write([]byte(num))
+
+		case []any:
+			list := bencodeList(v)
+			b.Write([]byte(list))
+
+		default:
+			return ""
+		}
+	}
+	b.Write([]byte("e"))
+
+	return b.String()
+}
+
+func bencode(dict map[string]any) (string, error) {
+	var b strings.Builder
+	keys := make([]string, len(dict))
+
+	for k := range dict {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	b.Write([]byte("d"))
+	for _, k := range keys[4:] { //for some reason first 4 elements are nil??
+		b.Write([]byte(bencodeString(k)))
+		switch v := dict[k].(type) {
+		case string:
+			str := bencodeString(v)
+			b.Write([]byte(str))
+
+		case int:
+			num := bencodeInteger(v)
+			b.Write([]byte(num))
+
+		case []interface{}:
+			list := bencodeList(v)
+			b.Write([]byte(list))
+
+		default:
+			return "", fmt.Errorf("unexpected type %T", v)
+		}
+	}
+	b.Write([]byte("e"))
+
+	return b.String(), nil
 }
