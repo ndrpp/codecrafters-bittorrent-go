@@ -224,42 +224,7 @@ func main() {
 		}
 		sha := hashInfo(bencodedInfo)
 
-		client := &http.Client{
-			Timeout: time.Duration(time.Duration.Seconds(5)),
-		}
-		req, err := http.NewRequest("GET", tracker.(string), nil)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		q := req.URL.Query()
-		q.Add("info_hash", string(sha))
-		q.Add("peer_id", "11111111111111111111")
-		q.Add("port", "6881")
-		q.Add("uploaded", "0")
-		q.Add("downloaded", "0")
-		q.Add("left", strconv.Itoa(length.(int)))
-		q.Add("compact", "1")
-		req.URL.RawQuery = q.Encode()
-
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		body, err := io.ReadAll(resp.Body)
-		defer resp.Body.Close()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		decodedBody, err, _ := decodeDict(0, string(body))
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		peers := []byte(decodedBody["peers"].(string))
+		peers := getPeers(sha, tracker, length)
 		for i := 0; i < len(peers); i += 6 {
 			fmt.Fprintf(os.Stdout, fmt.Sprintf("%d.%d.%d.%d:%d\n", int(peers[i]), int(peers[i+1]), int(peers[i+2]), int(peers[i+3]), int(peers[i+4])<<8|int(peers[i+5])))
 		}
@@ -307,11 +272,112 @@ func main() {
 		}
 		fmt.Fprintln(os.Stdout, fmt.Sprintf("Peer ID: %x", buf[48:int(size)]))
 
+	case "download_piece":
+		fp := os.Args[2]
+		content, err := os.ReadFile(fp)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		res, err, _ := decodeDict(0, string(content))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		tracker := res["announce"]
+		info := map[string]any(res["info"].(map[string]any))
+		length := info["length"]
+		//pieces := []byte(info["pieces"].(string))
+		//pieceLength := info["piece length"]
+		bencodedInfo, err := bencode(info)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		sha := hashInfo(bencodedInfo)
+
+		peers := getPeers(sha, tracker, length)
+		address := fmt.Sprintf("%d.%d.%d.%d:%d", int(peers[0]), int(peers[1]), int(peers[2]), int(peers[3]), int(peers[4])<<8|int(peers[5]))
+
+		conn, err := net.Dial("tcp", address)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		reserved := make([]byte, 8)
+
+		conn.Write([]byte{0b00010011})
+		conn.Write([]byte("BitTorrent protocol"))
+		conn.Write(reserved)
+		conn.Write(sha)
+		conn.Write([]byte("00112233445566778899"))
+
+		for {
+			buf := make([]byte, 256)
+			size, err := conn.Read(buf)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			fmt.Fprintln(os.Stdout, "received:", buf[:size])
+			switch {
+			case buf[4] == 5: //bitfield
+				conn.Write([]byte{0, 0, 0, 1, 2})
+
+			case buf[4] == 1: //unchoke
+				// TODO
+
+			default:
+			}
+		}
+
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
 
 	}
+}
+
+func getPeers(sha []byte, tracker, length any) []byte {
+	client := &http.Client{
+		Timeout: time.Duration(time.Duration.Seconds(5)),
+	}
+	req, err := http.NewRequest("GET", tracker.(string), nil)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	q := req.URL.Query()
+	q.Add("info_hash", string(sha))
+	q.Add("peer_id", "11111111111111111111")
+	q.Add("port", "6881")
+	q.Add("uploaded", "0")
+	q.Add("downloaded", "0")
+	q.Add("left", strconv.Itoa(length.(int)))
+	q.Add("compact", "1")
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	body, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	decodedBody, err, _ := decodeDict(0, string(body))
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	return []byte(decodedBody["peers"].(string))
 }
 
 func hashInfo(bencodedInfo string) []byte {
