@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -117,6 +120,12 @@ func parseList(list []any) (map[string]any, error) {
 	return result, nil
 }
 
+func decodeDict(i int, bencodedString string) (map[string]any, error, int) {
+	list, _, length := decodeList(i, bencodedString)
+	res, err := parseList(list)
+	return res, err, length
+}
+
 func decodeBencode(bencodedString string) (interface{}, error, int) {
 	for i := 0; i < len(bencodedString); i++ {
 		switch {
@@ -130,9 +139,7 @@ func decodeBencode(bencodedString string) (interface{}, error, int) {
 			return decodeList(i, bencodedString)
 
 		case bencodedString[i] == 'd':
-			list, _, length := decodeList(i, bencodedString)
-			res, err := parseList(list)
-			return res, err, length
+			return decodeDict(i, bencodedString)
 
 		default:
 			return "", fmt.Errorf("Unsupported"), 0
@@ -144,7 +151,8 @@ func decodeBencode(bencodedString string) (interface{}, error, int) {
 func main() {
 	command := os.Args[1]
 
-	if command == "decode" {
+	switch command {
+	case "decode":
 		bencodedValue := os.Args[2]
 
 		decoded, err, _ := decodeBencode(bencodedValue)
@@ -155,7 +163,8 @@ func main() {
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
-	} else if command == "info" {
+
+	case "info":
 		fp := os.Args[2]
 
 		content, err := os.ReadFile(fp)
@@ -163,8 +172,7 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-		list, _, _ := decodeList(0, string(content))
-		res, err := parseList(list)
+		res, err, _ := decodeDict(0, string(content))
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -199,9 +207,79 @@ func main() {
 			fmt.Fprintln(os.Stdout, hex.EncodeToString(pieces[i:i+20]))
 		}
 
-	} else {
+	case "peers":
+		fp := os.Args[2]
+
+		content, err := os.ReadFile(fp)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		res, err, _ := decodeDict(0, string(content))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		tracker := res["announce"]
+		info := map[string]any(res["info"].(map[string]any))
+		length := info["length"]
+		bencodedInfo, err := bencode(info)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		hasher := sha1.New()
+		_, err = hasher.Write([]byte(bencodedInfo))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to sha1 hash the commit: %s\n", err)
+			os.Exit(1)
+		}
+		sha := hasher.Sum(nil)
+
+		client := &http.Client{
+			Timeout: time.Duration(time.Duration.Seconds(5)),
+		}
+		req, err := http.NewRequest("GET", tracker.(string), nil)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+
+		q := req.URL.Query()
+		q.Add("info_hash", string(sha))
+		q.Add("peer_id", "11111111111111111111")
+		q.Add("port", "6881")
+		q.Add("uploaded", "0")
+		q.Add("downloaded", "0")
+		q.Add("left", strconv.Itoa(length.(int)))
+		q.Add("compact", "1")
+		req.URL.RawQuery = q.Encode()
+
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		body, err := io.ReadAll(resp.Body)
+		defer resp.Body.Close()
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		decodedBody, err, _ := decodeDict(0, string(body))
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		peers := []byte(decodedBody["peers"].(string))
+		for i := 0; i < len(peers); i += 6 {
+			fmt.Fprintf(os.Stdout, fmt.Sprintf("%d.%d.%d.%d:%d\n", int(peers[i]), int(peers[i+1]), int(peers[i+2]), int(peers[i+3]), int(peers[i+4])<<8|int(peers[i+5])))
+		}
+
+	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
+
 	}
 }
 
