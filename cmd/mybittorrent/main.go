@@ -172,6 +172,8 @@ func main() {
 		tracker := res["announce"]
 		info := map[string]any(res["info"].(map[string]any))
 		length := info["length"]
+		pieces := []byte(info["pieces"].(string))
+		pieceLength := info["piece length"]
 		bencodedInfo, err := bencode(info)
 		if err != nil {
 			fmt.Println(err)
@@ -190,6 +192,12 @@ func main() {
 		fmt.Fprintln(os.Stdout, "Tracker URL:", tracker)
 		fmt.Fprintln(os.Stdout, "Length:", length)
 		fmt.Fprintln(os.Stdout, "Info Hash:", hexedSha)
+
+		fmt.Fprintln(os.Stdout, "Piece Length:", pieceLength)
+		fmt.Fprintln(os.Stdout, "Piece Hashes:")
+		for i := 0; i < len(pieces); i += 20 {
+			fmt.Fprintln(os.Stdout, hex.EncodeToString(pieces[i:i+20]))
+		}
 
 	} else {
 		fmt.Println("Unknown command: " + command)
