@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -187,14 +188,7 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-
-		hasher := sha1.New()
-		_, err = hasher.Write([]byte(bencodedInfo))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to sha1 hash the commit: %s\n", err)
-			os.Exit(1)
-		}
-		sha := hasher.Sum(nil)
+		sha := hashInfo(bencodedInfo)
 		hexedSha := hex.EncodeToString(sha)
 
 		fmt.Fprintln(os.Stdout, "Tracker URL:", tracker)
@@ -228,13 +222,7 @@ func main() {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		hasher := sha1.New()
-		_, err = hasher.Write([]byte(bencodedInfo))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to sha1 hash the commit: %s\n", err)
-			os.Exit(1)
-		}
-		sha := hasher.Sum(nil)
+		sha := hashInfo(bencodedInfo)
 
 		client := &http.Client{
 			Timeout: time.Duration(time.Duration.Seconds(5)),
@@ -276,11 +264,64 @@ func main() {
 			fmt.Fprintf(os.Stdout, fmt.Sprintf("%d.%d.%d.%d:%d\n", int(peers[i]), int(peers[i+1]), int(peers[i+2]), int(peers[i+3]), int(peers[i+4])<<8|int(peers[i+5])))
 		}
 
+	case "handshake":
+		fp := os.Args[2]
+		address := os.Args[3]
+
+		content, err := os.ReadFile(fp)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		res, err, _ := decodeDict(0, string(content))
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		info := map[string]any(res["info"].(map[string]any))
+		bencodedInfo, err := bencode(info)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		sha := hashInfo(bencodedInfo)
+		conn, err := net.Dial("tcp", address)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		defer conn.Close()
+		reserved := make([]byte, 8)
+		buf := make([]byte, 512)
+
+		conn.Write([]byte{0b00010011})
+		conn.Write([]byte("BitTorrent protocol"))
+		conn.Write(reserved)
+		conn.Write(sha)
+		conn.Write([]byte("00112233445566778899"))
+
+		size, err := conn.Read(buf)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		fmt.Fprintln(os.Stdout, fmt.Sprintf("Peer ID: %x", buf[48:int(size)]))
+
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
 
 	}
+}
+
+func hashInfo(bencodedInfo string) []byte {
+	hasher := sha1.New()
+	_, err := hasher.Write([]byte(bencodedInfo))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to sha1 hash the info: %s\n", err)
+		os.Exit(1)
+	}
+	return hasher.Sum(nil)
 }
 
 func bencodeList(arr []any) string {
