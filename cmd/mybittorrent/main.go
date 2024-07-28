@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +17,8 @@ import (
 	"time"
 	"unicode"
 )
+
+const BLOCK_SIZE = 16 * 1024
 
 func decodeString(i int, bencodedString string) (string, error, int) {
 	var firstColonIndex int
@@ -273,7 +277,8 @@ func main() {
 		fmt.Fprintln(os.Stdout, fmt.Sprintf("Peer ID: %x", buf[48:int(size)]))
 
 	case "download_piece":
-		fp := os.Args[2]
+		fp := os.Args[4]
+		pieceId, err := strconv.Atoi(os.Args[5])
 		content, err := os.ReadFile(fp)
 		if err != nil {
 			fmt.Println(err)
@@ -287,8 +292,8 @@ func main() {
 		tracker := res["announce"]
 		info := map[string]any(res["info"].(map[string]any))
 		length := info["length"]
-		//pieces := []byte(info["pieces"].(string))
-		//pieceLength := info["piece length"]
+		pieces := []byte(info["pieces"].(string))
+		pieceLength := info["piece length"]
 		bencodedInfo, err := bencode(info)
 		if err != nil {
 			fmt.Println(err)
@@ -305,38 +310,120 @@ func main() {
 			os.Exit(1)
 		}
 		defer conn.Close()
-		reserved := make([]byte, 8)
+		handshake(conn, sha, err)
 
-		conn.Write([]byte{0b00010011})
-		conn.Write([]byte("BitTorrent protocol"))
-		conn.Write(reserved)
-		conn.Write(sha)
-		conn.Write([]byte("00112233445566778899"))
+		waitFor(conn, 5)
+		conn.Write([]byte{0, 0, 0, 1, 2}) //interested
+		waitFor(conn, 1)                  //unchoke
 
-		for {
-			buf := make([]byte, 256)
-			size, err := conn.Read(buf)
-			if err != nil {
-				fmt.Println(err)
-				return
+		pieceHash := getPieces(pieces)[pieceId]
+		count := 0
+		for byteOffset := 0; byteOffset < int(pieceLength.(int)); byteOffset = byteOffset + BLOCK_SIZE {
+			payload := make([]byte, 12)
+			binary.BigEndian.PutUint32(payload[0:4], uint32(pieceId))
+			binary.BigEndian.PutUint32(payload[4:8], uint32(byteOffset))
+			binary.BigEndian.PutUint32(payload[8:], BLOCK_SIZE)
+
+			_, err := conn.Write(createPeerMessage(6, payload)) //request
+			handleErr(err)
+
+			count++
+		}
+
+		combinedBlockToPiece := make([]byte, pieceLength.(int))
+		for i := 0; i < count; i++ {
+			data := waitFor(conn, 7) //piece
+
+			index := binary.BigEndian.Uint32(data[0:4])
+			if index != uint32(pieceId) {
+				panic(fmt.Sprintf("something went wrong [expected: %d -- actual: %d]", pieceId, index))
 			}
 
-			fmt.Fprintln(os.Stdout, "received:", buf[:size])
-			switch {
-			case buf[4] == 5: //bitfield
-				conn.Write([]byte{0, 0, 0, 1, 2})
+			begin := binary.BigEndian.Uint32(data[4:8])
+			block := data[8:]
+			copy(combinedBlockToPiece[begin:], block)
+		}
 
-			case buf[4] == 1: //unchoke
-				// TODO
-
-			default:
-			}
+		sum := sha1.Sum(combinedBlockToPiece)
+		if string(sum[:]) == pieceHash {
+			err := os.WriteFile(os.Args[3], combinedBlockToPiece, os.ModePerm)
+			handleErr(err)
+			return
+		} else {
+			panic("unequal pieces")
 		}
 
 	default:
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
+	}
+}
 
+func getPieces(pieces []byte) []string {
+	piecesMap := make([]string, len(pieces)/20)
+
+	for i := 0; i < len(pieces)/20; i++ {
+		piece := pieces[i*20 : (i*20)+20]
+		piecesMap[i] = string(piece)
+	}
+
+	return piecesMap
+}
+
+func handshake(conn net.Conn, sha []byte, err error) {
+	reserved := make([]byte, 8)
+	conn.Write([]byte{0b00010011})
+	conn.Write([]byte("BitTorrent protocol"))
+	conn.Write(reserved)
+	conn.Write(sha)
+	conn.Write([]byte("00112233445566778899"))
+
+	buf := make([]byte, 1+19+8+20+20)
+	_, err = conn.Read(buf)
+	handleErr(err)
+}
+
+func createPeerMessage(messageId uint8, payload []byte) []byte {
+	messageData := make([]byte, 4+1+len(payload))
+	binary.BigEndian.PutUint32(messageData[0:4], uint32(1+len(payload)))
+	messageData[4] = messageId
+	copy(messageData[5:], payload)
+
+	return messageData
+}
+
+func waitFor(connection net.Conn, expectedMessageId uint8) []byte {
+	fmt.Printf("Waiting for %d\n", expectedMessageId)
+	for {
+		messageLengthPrefix := make([]byte, 4)
+		_, err := connection.Read(messageLengthPrefix)
+		handleErr(err)
+
+		messageLength := binary.BigEndian.Uint32(messageLengthPrefix)
+		fmt.Printf("messageLength %v\n", messageLength)
+		receivedMessageId := make([]byte, 1)
+		_, err = connection.Read(receivedMessageId)
+		handleErr(err)
+
+		var messageId uint8
+		binary.Read(bytes.NewReader(receivedMessageId), binary.BigEndian, &messageId)
+		fmt.Printf("MessageId: %d\n", messageId)
+
+		payload := make([]byte, messageLength-1)
+		size, err := io.ReadFull(connection, payload)
+		handleErr(err)
+		fmt.Printf("Payload: %d, size = %d\n", len(payload), size)
+		if messageId == expectedMessageId {
+			fmt.Printf("Return for MessageId: %d\n", messageId)
+			return payload
+		}
+	}
+}
+
+func handleErr(err error) {
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
 }
 
